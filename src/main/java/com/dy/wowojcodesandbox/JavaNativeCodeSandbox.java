@@ -2,11 +2,16 @@ package com.dy.wowojcodesandbox;
 
 import cn.hutool.core.io.FileUtil;
 import cn.hutool.core.io.resource.ResourceUtil;
+import cn.hutool.core.util.StrUtil;
 import com.dy.wowojcodesandbox.model.ExecuteCodeRequest;
 import com.dy.wowojcodesandbox.model.ExecuteCodeResponse;
+import com.dy.wowojcodesandbox.model.ExecuteMessage;
+import com.dy.wowojcodesandbox.model.JudgeInfo;
+import com.dy.wowojcodesandbox.utils.ProcessUtils;
 
 import java.io.File;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.UUID;
@@ -28,7 +33,6 @@ public class JavaNativeCodeSandbox implements CodeSandbox{
     @Override
     public ExecuteCodeResponse executeCode(ExecuteCodeRequest executeCodeRequest) {
         List<String> inputList = executeCodeRequest.getInputList();
-        String language = executeCodeRequest.getLanguage();
         String code = executeCodeRequest.getCode();
         //1.把用户代码保存为文件
         String userDir = System.getProperty("user.dir");
@@ -41,9 +45,79 @@ public class JavaNativeCodeSandbox implements CodeSandbox{
         String userCodeParentPath = globalCodePathName + File.separator + UUID.randomUUID();
         String userCodePath = userCodeParentPath + File.separator + GLOBAL_JAVA_CLASS_NAME;
         File userCodeFile = FileUtil.writeString(code,userCodePath, StandardCharsets.UTF_8);
-
         //2.编译代码,得到.class文件
         String compileCmd = String.format("javac -encoding utf-8 %s", userCodeFile.getAbsolutePath());
-        return null;
+        try{
+            Process compileProcess = Runtime.getRuntime().exec(compileCmd);
+            ExecuteMessage executeMessage = ProcessUtils.runProcessAndGetMessage(compileProcess,"编译");
+            System.out.println(executeMessage);
+        }catch (Exception e){
+            return getErrorResponse(e);
+        }
+
+        //3.执行代码
+        List<ExecuteMessage> executeMessageList = new ArrayList<>();
+        for(String inputArgs : inputList){
+            String runCmd = String.format("java -Dfile.encoding=UTF-8 -cp %s Main %s", userCodeParentPath,inputArgs);
+            try{
+                Process runProcess = Runtime.getRuntime().exec(runCmd);
+                ExecuteMessage executeMessage = ProcessUtils.runProcessAndGetMessage(runProcess,"运行");
+                executeMessageList.add(executeMessage);
+            }catch (Exception e){
+                return getErrorResponse(e);
+            }
+        }
+
+        //4.收集整理输出结果
+        ExecuteCodeResponse executeCodeResponse = new ExecuteCodeResponse();
+        List<String> outputList = new ArrayList<>();
+        //取最大值
+        long maxTime = 0;
+        for(ExecuteMessage executeMessage : executeMessageList){
+            String errorMessage = executeMessage.getErrorMessage();
+            if(StrUtil.isNotBlank(errorMessage)){
+                executeCodeResponse.setMessage(errorMessage);
+                executeCodeResponse.setStatus(3);
+                break;
+            }
+            outputList.add(executeMessage.getMessage());
+            Long time = executeMessage.getTime();
+            if(time != null){
+                maxTime = Math.max(time,maxTime);
+            }
+        }
+        executeCodeResponse.setOutputList(outputList);
+        if(outputList.size() == executeMessageList.size()){
+            //正常执行完成
+            executeCodeResponse.setStatus(1);
+        }
+        JudgeInfo judgeInfo = new JudgeInfo();
+//        judgeInfo.setMemory();
+        judgeInfo.setTime(maxTime);
+        executeCodeResponse.setJudgeInfo(judgeInfo);
+        //5. 文件清理
+        if (userCodeFile.getParentFile() != null) {
+            boolean del = FileUtil.del(userCodeParentPath);
+            System.out.println("删除" + (del ? "成功" : "失败"));
+        }
+
+        return executeCodeResponse;
     }
+
+    /**
+     * 获取错误响应
+     *
+     * @param e
+     * @return
+     */
+    private ExecuteCodeResponse getErrorResponse(Throwable e) {
+        ExecuteCodeResponse executeCodeResponse = new ExecuteCodeResponse();
+        executeCodeResponse.setOutputList(new ArrayList<>());
+        executeCodeResponse.setMessage(e.getMessage());
+        // 表示代码沙箱错误
+        executeCodeResponse.setStatus(2);
+        executeCodeResponse.setJudgeInfo(new JudgeInfo());
+        return executeCodeResponse;
+    }
+
 }
